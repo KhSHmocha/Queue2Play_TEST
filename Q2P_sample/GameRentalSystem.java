@@ -1,25 +1,23 @@
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.PrintWriter;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
+import java.io.*;
+import java.time.*;
+import java.time.format.*;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.PriorityQueue;
-import java.util.Scanner;
-import java.util.Stack;
+import java.util.*;
 
 public class GameRentalSystem {
 
     // ---------- Settings ----------
     static final String ACCOUNTS_FILE = "accounts.txt";
+    static final String GAMES_FILE = "games.txt";
+    static final String RENTALS_FILE = "rentals.txt";
+    static final String QUEUE_FILE = "queue.txt";
+    static final String LOG_FILE = "logs.txt";
     static final int RENTAL_DAYS = 3;
     static final double LATE_FEE_PER_DAY = 1.00;
     static final double VIP_DISCOUNT = 0.10;
     static final String LINE = "========================================";
     static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("MMMM d, yyyy");
+    static final DateTimeFormatter LOG_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     // ---------- Data structures ----------
     Scanner input = new Scanner(System.in);
@@ -35,6 +33,10 @@ public class GameRentalSystem {
     // Min-Heap: the rental with the earliest due date is on top
     PriorityQueue<Rental> activeRentals =
         new PriorityQueue<>((a, b) -> a.dueDate.compareTo(b.dueDate));
+
+    // Every rental ever made (active and completed), in rental-number order.
+    // Only used so rentals.txt can be written; the other structures work as before.
+    ArrayList<Rental> allRentals = new ArrayList<>();
 
     // Stack: the most recent admin action is on top
     Stack<String> auditLog = new Stack<>();
@@ -104,7 +106,10 @@ public class GameRentalSystem {
 
     public void start() {
         loadAccounts();
-        loadStartingGames();
+        loadGames();
+        loadRentals();
+        loadQueue();
+        loadLogs();
 
         boolean running = true;
         while (running) {
@@ -284,6 +289,7 @@ public class GameRentalSystem {
         // New accounts are always CLIENT and REGULAR
         users.add(new User(username, fullName, email, password, "CLIENT", "REGULAR"));
         saveAccounts();
+        logEvent("Registered account: " + username);
 
         printHeader("ACCOUNT CREATED SUCCESSFULLY");
         System.out.println("Username: " + username);
@@ -304,6 +310,7 @@ public class GameRentalSystem {
             User user = findUser(username);
 
             if (user != null && user.password.equals(password)) {
+                logEvent("Login: " + user.username + " (" + user.role + ")");
                 System.out.println("\nLogin successful!");
                 System.out.println("Welcome, " + user.username);
                 System.out.println("Role: " + user.role + " | Membership: " + user.membership);
@@ -318,9 +325,259 @@ public class GameRentalSystem {
 
             // General message: does not reveal which part was wrong
             System.out.println("Invalid username or password. Please try again.");
+            logEvent("Failed login attempt for username: " + username);
         }
 
         System.out.println("Too many failed attempts. Returning to the main menu.");
+    }
+
+    // =====================================================
+    //  SAVING AND LOADING (games, rentals, queue, logs)
+    //  All files use the same style as accounts.txt: one record per
+    //  line, fields separated by |
+    // =====================================================
+
+    // Saves everything that changes during a transaction
+    void saveData() {
+        saveGames();
+        saveRentals();
+        saveQueue();
+    }
+
+    // games.txt  ->  gameId|title|platform|price|availableCopies
+    // The first line (#COUNTERS) remembers the ID counters so IDs are never reused.
+    void saveGames() {
+        try (PrintWriter writer = new PrintWriter(GAMES_FILE)) {
+            writer.println("#COUNTERS|" + ps5Count + "|" + xboxCount + "|" + nintendoCount);
+            for (Game game : games.values()) {
+                writer.println(game.gameId + "|" + game.title + "|" + game.platform + "|"
+                    + game.price + "|" + game.availableCopies);
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Warning: could not save games.txt.");
+        }
+    }
+
+    void loadGames() {
+        File file = new File(GAMES_FILE);
+
+        // First run: use the starting games and create the file
+        if (!file.exists()) {
+            loadStartingGames();
+            saveGames();
+            return;
+        }
+
+        try (Scanner reader = new Scanner(file)) {
+            while (reader.hasNextLine()) {
+                String line = reader.nextLine().trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+
+                String[] parts = line.split("\\|");
+                try {
+                    if (parts[0].equals("#COUNTERS") && parts.length == 4) {
+                        ps5Count = Math.max(ps5Count, Integer.parseInt(parts[1]));
+                        xboxCount = Math.max(xboxCount, Integer.parseInt(parts[2]));
+                        nintendoCount = Math.max(nintendoCount, Integer.parseInt(parts[3]));
+                    } else if (parts.length == 5) {
+                        Game game = new Game(parts[0], parts[1], parts[2],
+                            Double.parseDouble(parts[3]), Integer.parseInt(parts[4]));
+                        games.put(game.gameId, game);
+                        updateCounterFromId(game.gameId);
+                    }
+                } catch (NumberFormatException e) {
+                    // skip a damaged line instead of crashing
+                }
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Could not read games.txt. Loading the starting games instead.");
+            loadStartingGames();
+        }
+    }
+
+    // Makes sure the next generated ID is higher than every ID already in the file
+    void updateCounterFromId(String id) {
+        if (id.length() < 2) {
+            return;
+        }
+        int number;
+        try {
+            number = Integer.parseInt(id.substring(1));
+        } catch (NumberFormatException e) {
+            return;
+        }
+
+        if (id.startsWith("P")) {
+            ps5Count = Math.max(ps5Count, number);
+        } else if (id.startsWith("X")) {
+            xboxCount = Math.max(xboxCount, number);
+        } else if (id.startsWith("N")) {
+            nintendoCount = Math.max(nintendoCount, number);
+        }
+    }
+
+    // rentals.txt  ->  rentalNumber|username|gameId|title|platform|checkoutDate|dueDate|amount|status
+    // The title and platform are saved too, so history still displays correctly
+    // even if the game is removed from the inventory later.
+    void saveRentals() {
+        try (PrintWriter writer = new PrintWriter(RENTALS_FILE)) {
+            for (Rental rental : allRentals) {
+                writer.println(rental.rentalNumber + "|" + rental.client.username + "|"
+                    + rental.game.gameId + "|" + rental.game.title + "|" + rental.game.platform + "|"
+                    + rental.checkoutDate + "|" + rental.dueDate + "|"
+                    + rental.amount + "|" + rental.status);
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Warning: could not save rentals.txt.");
+        }
+    }
+
+    void loadRentals() {
+        File file = new File(RENTALS_FILE);
+        if (!file.exists()) {
+            return;
+        }
+
+        try (Scanner reader = new Scanner(file)) {
+            while (reader.hasNextLine()) {
+                String line = reader.nextLine().trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+
+                String[] parts = line.split("\\|");
+                if (parts.length != 9) {
+                    continue;
+                }
+
+                User client = findUser(parts[1]);
+                if (client == null) {
+                    continue;
+                }
+
+                try {
+                    Game game = games.get(parts[2]);
+                    if (game == null) {
+                        // The game was removed later: keep a detached copy for the history
+                        game = new Game(parts[2], parts[3], parts[4], 0, 0);
+                    }
+
+                    int number = Integer.parseInt(parts[0]);
+                    Rental rental = new Rental(number, client, game,
+                        LocalDate.parse(parts[5]), LocalDate.parse(parts[6]),
+                        Double.parseDouble(parts[7]));
+                    rental.status = parts[8];
+
+                    allRentals.add(rental);
+                    client.rentalHistory.push(rental);
+                    if (rental.status.equals("ACTIVE")) {
+                        activeRentals.add(rental);
+                    }
+                    nextRentalNumber = Math.max(nextRentalNumber, number + 1);
+                } catch (NumberFormatException | DateTimeParseException e) {
+                    // skip a damaged line instead of crashing
+                }
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Could not read rentals.txt.");
+        }
+    }
+
+    // queue.txt  ->  queueNumber|username|gameId|vip   (saved in queue order)
+    void saveQueue() {
+        try (PrintWriter writer = new PrintWriter(QUEUE_FILE)) {
+            RentalRequest current = checkoutQueue.head;
+            while (current != null) {
+                writer.println(current.queueNumber + "|" + current.client.username + "|"
+                    + current.game.gameId + "|" + current.vip);
+                current = current.next;
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Warning: could not save queue.txt.");
+        }
+    }
+
+    void loadQueue() {
+        File file = new File(QUEUE_FILE);
+        if (!file.exists()) {
+            return;
+        }
+
+        try (Scanner reader = new Scanner(file)) {
+            while (reader.hasNextLine()) {
+                String line = reader.nextLine().trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+
+                String[] parts = line.split("\\|");
+                if (parts.length != 4) {
+                    continue;
+                }
+
+                User client = findUser(parts[1]);
+                Game game = games.get(parts[2]);
+                if (client == null || game == null) {
+                    continue;
+                }
+
+                try {
+                    int number = Integer.parseInt(parts[0]);
+                    RentalRequest request = new RentalRequest(number, client, game);
+                    request.vip = Boolean.parseBoolean(parts[3]);   // membership at request time
+                    checkoutQueue.addRequest(request);              // same VIP/Regular rule as before
+                    nextQueueNumber = Math.max(nextQueueNumber, number + 1);
+                } catch (NumberFormatException e) {
+                    // skip a damaged line instead of crashing
+                }
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Could not read queue.txt.");
+        }
+    }
+
+    // logs.txt  ->  timestamp|TYPE|message
+    // ADMIN lines are the admin audit log. EVENT lines are client/system activity.
+    // The file is only ever appended to, so it is a permanent history.
+    void writeLog(String type, String message) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(LOG_FILE, true))) {
+            writer.println(LocalDateTime.now().format(LOG_TIME_FORMAT) + "|" + type + "|" + message);
+        } catch (IOException e) {
+            System.out.println("Warning: could not write to logs.txt.");
+        }
+    }
+
+    // Admin action: goes on the audit log Stack AND into logs.txt
+    void logAdmin(String message) {
+        auditLog.push(message);
+        writeLog("ADMIN", message);
+    }
+
+    // Any other transaction (register, login, queue request, VIP upgrade...)
+    void logEvent(String message) {
+        writeLog("EVENT", message);
+    }
+
+    // Rebuilds the audit log Stack from logs.txt (oldest first, so the newest ends on top)
+    void loadLogs() {
+        File file = new File(LOG_FILE);
+        if (!file.exists()) {
+            return;
+        }
+
+        try (Scanner reader = new Scanner(file)) {
+            while (reader.hasNextLine()) {
+                String line = reader.nextLine().trim();
+                String[] parts = line.split("\\|", 3);
+                if (parts.length == 3 && parts[1].equals("ADMIN")) {
+                    auditLog.push(parts[2]);
+                }
+            }
+        } catch (FileNotFoundException e) {
+            System.out.println("Could not read logs.txt.");
+        }
     }
 
     // =====================================================
@@ -688,6 +945,9 @@ public class GameRentalSystem {
         RentalRequest request = new RentalRequest(nextQueueNumber, client, game);
         nextQueueNumber++;
         checkoutQueue.addRequest(request);
+        saveQueue();
+        logEvent("Queue request " + queueLabel(request.queueNumber) + ": "
+                 + client.username + " - " + game.title);
 
         System.out.println("Request added to the checkout queue.");
         System.out.println("Queue Number: " + queueLabel(request.queueNumber));
@@ -723,6 +983,9 @@ public class GameRentalSystem {
         }
 
         checkoutQueue.removeRequest(request);
+        saveQueue();
+        logEvent("Client cancelled queue request " + queueLabel(number) + ": "
+                 + client.username + " - " + request.game.title);
         System.out.println("Queue request " + queueLabel(number) + " has been cancelled.");
     }
 
@@ -763,6 +1026,7 @@ public class GameRentalSystem {
         if (confirm.equalsIgnoreCase("Y")) {
             client.membership = "VIP";
             saveAccounts();
+            logEvent("Upgraded to VIP: " + client.username);
             System.out.println("Upgrade successful! You are now a VIP member.");
         } else {
             System.out.println("Upgrade cancelled.");
@@ -854,7 +1118,8 @@ public class GameRentalSystem {
             approveCheckout(next);
         } else if (choice == 2) {
             checkoutQueue.removeRequest(next);
-            auditLog.push("Cancelled request: " + next.client.username + " - " + next.game.title);
+            logAdmin("Cancelled request: " + next.client.username + " - " + next.game.title);
+            saveQueue();
             System.out.println("Request " + queueLabel(next.queueNumber) + " has been cancelled.");
         } else if (choice != 0) {
             System.out.println("Invalid choice.");
@@ -871,12 +1136,14 @@ public class GameRentalSystem {
             getRentalPrice(request.client, request.game));
         nextRentalNumber++;
 
+        allRentals.add(rental);
         activeRentals.add(rental);                   // add to the Min-Heap
         request.client.rentalHistory.push(rental);   // add to the client's Stack
         checkoutQueue.removeRequest(request);        // remove from the queue
-        auditLog.push("Processed checkout: " + request.client.username
+        logAdmin("Processed checkout: " + request.client.username
                       + " - " + request.game.title);
 
+        saveData();
         System.out.println("\nCheckout approved!");
         System.out.println("Rental " + rentalLabel(rental.rentalNumber) + " is now ACTIVE.");
         System.out.println("Amount: " + money(rental.amount));
@@ -935,11 +1202,12 @@ public class GameRentalSystem {
         found.status = "COMPLETED";
         found.game.availableCopies++;
 
-        auditLog.push("Processed return: " + found.client.username + " - " + found.game.title);
+        logAdmin("Processed return: " + found.client.username + " - " + found.game.title);
         if (lateFee > 0) {
-            auditLog.push("Applied late fee " + money(lateFee) + ": " + found.client.username);
+            logAdmin("Applied late fee " + money(lateFee) + ": " + found.client.username);
         }
 
+        saveData();
         printHeader("RETURN PROCESSED");
         System.out.println("Customer: " + found.client.username);
         System.out.println("Game: " + found.game.title);
@@ -1066,6 +1334,10 @@ public class GameRentalSystem {
             System.out.println("Title cannot be empty.");
             return;
         }
+        if (title.contains("|")) {
+            System.out.println("Title cannot contain the | symbol.");
+            return;
+        }
 
         System.out.println("Platform: [1] PS5  [2] Xbox  [3] Nintendo");
         int platformChoice = readNumber("Enter choice: ");
@@ -1101,8 +1373,9 @@ public class GameRentalSystem {
         }
 
         Game game = addGameToInventory(title, platform, price, copies);
-        auditLog.push("Added game: " + title + " (" + platform + ")");
+        logAdmin("Added game: " + title + " (" + platform + ")");
 
+        saveGames();
         System.out.println("Game added successfully. Game ID: " + game.gameId);
     }
 
@@ -1141,8 +1414,9 @@ public class GameRentalSystem {
 
         int cancelled = checkoutQueue.removeRequestsForGame(game);
         games.remove(game.gameId);
-        auditLog.push("Removed game: " + game.title + " (" + game.platform + ")");
+        logAdmin("Removed game: " + game.title + " (" + game.platform + ")");
 
+        saveData();
         System.out.println("Game removed successfully.");
         if (cancelled > 0) {
             System.out.println(cancelled + " pending queue request(s) for this game were cancelled.");
