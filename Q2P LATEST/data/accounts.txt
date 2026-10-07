@@ -1,0 +1,3 @@
+alex|Alex Reyes|alex@email.com|alex12345|CLIENT|VIP
+juan|Juan Dela Cruz|juan@email.com|juan12345|CLIENT|REGULAR
+Gerbs|Gerbie A. Hernandez|Gerbiehernandez@email.com|123123123|CLIENT|VIP

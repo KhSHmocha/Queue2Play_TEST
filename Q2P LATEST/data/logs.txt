@@ -1,0 +1,13 @@
+2026-10-05 01:52:33|EVENT|Login: juan (CLIENT)
+2026-10-05 01:53:34|EVENT|Login: juan (CLIENT)
+2026-10-05 06:28:17|EVENT|Queue request #001: juan - Spider-Man 2 x1 (1 day(s))
+2026-10-05 06:29:11|EVENT|Login: admin (ADMIN)
+2026-10-05 06:29:30|ADMIN|Processed checkout: juan - Spider-Man 2 x1
+2026-10-05 06:29:55|ADMIN|Processed return: juan - Spider-Man 2 x1
+2026-10-05 06:30:55|ADMIN|Added stock: Spider-Man 2 (PS5) 2 -> 3
+2026-10-05 06:32:36|ADMIN|Added game: Rene Butterboia (PS5)
+2026-10-05 06:32:53|ADMIN|Deleted game: Rene Butterboia (PS5)
+2026-10-05 06:35:30|EVENT|Registered account: Gerbs
+2026-10-05 06:35:44|EVENT|Login: Gerbs (CLIENT)
+2026-10-05 06:35:53|EVENT|Upgraded to VIP: Gerbs
+2026-10-07 10:07:35|EVENT|Login: Gerbs (CLIENT)
